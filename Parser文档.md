@@ -203,7 +203,7 @@ Parser模块实现将序列化文件反序列化为计算图的功能。
 * IrContext : 该对象管理所有注册的方言，Parser在工作过程中会通过此对象得到OpInfo以及通过DialectName得到对应的Dialect对象。
 * Last_Token : 保存一个Token和Cur_Token一起实现PeekToken的功能
 * Cur_Token : 保存一个Token和Cur_Token一起实现PeekToken的功能
-* LexSegment : 段信息，主要保存当前Parser正处于哪一个工作段中。[分段信息](#238-isendtag和isspace函数的实现)
+* LexSegment : 段信息，主要保存当前Parser正处于哪一个工作段中。`该部分会重新优化，放弃使用分段信息。`[分段信息](#238-isendtag和isspace函数的实现)
 
 #### 2.4.2 Parser递归下降程序框图
 
@@ -460,6 +460,7 @@ pd方言中共定义了一下`Attribute`；
 其中`ScalarAttribute`是`BoolAttribute`,`Int32Attribute`,`Int64Attribute`,`DoubleAttribute`,`FloatAttribute`的抽象，它可以为这五个类型之一。所以这里直接将`ScalarAttribute`Parse成这5个`Attribute`之一。
 
 根据之前对于`Attribute`的Printer的约定，pd中的`ParseAttribute`实现如下：
+TODO:使用unorder_map优化if-else
 
 ```C++
 ir::Attribute PaddleDialect::ParseAttribute(ir::IrParser &parser) {  // NOLINT
@@ -518,4 +519,5 @@ ir::Attribute TestParserDialect::ParseAttribute(
 
 这里的`test:(tp.char)a`是`TestParserDialect`自定义`Attribute`的Printer输出。
 当`IrParser`中的`ctx`注册了`TestParserDialect`之后，当`IrParser`处理到`(tp.char)`时,`IrParser`程序就可以根据`DialectName`找到`Dialect`对象，执行里面预置的`ParserAttribute`方法。
+### 3.2给Parser增加测试
 
