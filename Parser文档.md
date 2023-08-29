@@ -168,7 +168,7 @@ char Lexer::GetChar() {
 * parserAttribute：解析Attribute段
 * parseFunctionType：解析FunctionType段
 
-可以在每个段中定义不同的界符。
+可以在每个段中定义不同的界符。`该部分会重新优化，放弃使用分段信息。`
 
 #### 2.3.9 GetToken函数的实现
 该函数依次调用上述以Lex开头命名的函数，如果返回值为空，则说明当前Token不是该函数所描述的，有且仅有一个函数可以成功解析该Token并且返回。
