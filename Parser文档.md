@@ -71,19 +71,20 @@ class Lexer {
  public:
   explicit Lexer(std::istream& is) : is(is) {}
   ~Lexer() = default;
-  Token GetToken(LexSegment seg);  //获一个Token    
-  Token* LexIdentifer(LexSegment seg); //解析一个Identifer
-  Token* LexNumberOrArraow(); //解析一个数字或 ‘->’
-  Token* LexEndTagOrNullVal(LexSegment seg); //解析空值或终结符（界符）
-  Token* LexValueId(); //解析ValueId
-  Token* LexEOF();  //解析文件结束标志EOF
-  Token* LexOpName(); //解析OpName
+  Token ConsumeToken(LexSegment seg);  //获一个Token,并消费掉   
+  std::unique_ptr<Token> LexIdentifer(LexSegment seg); //解析一个Identifer
+  std::unique_ptr<Token> LexNumberOrArraow(); //解析一个数字或 ‘->’
+  std::unique_ptr<Token> LexEndTagOrNullVal(LexSegment seg); //解析空值或终结符（界符）
+  std::unique_ptr<Token> LexValueId(); //解析ValueId
+  std::unique_ptr<Token> LexEOF();  //解析文件结束标志EOF
+  std::unique_ptr<Token> LexOpName(); //解析OpName
   char GetChar(); //在流is中取一个字符
   void SkipWhitespace(); //跳过空白字符
   bool IsEndTag(char, LexSegment); //判断当前字符是否为终结符
   bool IsSpace(char); //判断当前字符是否为空白字符
   size_t GetLine(); //返回line
   size_t GetColumn(); //返回column
+  void Unget(const int len);//在字符流中撤销len个字符的读取
 };
 ```
 #### 2.3.1 LexerIdentifer函数的实现
@@ -107,7 +108,7 @@ if ((!isalpha(is.peek()) && is.peek() != '_') || IsEndTag(is.peek(), seg)) {
 #### 2.3.3 LexEndTagOrNullVal函数的实现
 该函数主要解析终结符(界符)和空的Attribute或Type，其中Attribute的空值printer将其输出为`<#AttrNull>`,Type的空值printer将其输出为`<<NULL TYPE>>`因为字符'<'本身作为终结符，所以当Lexer遇到字符'<'时会向前peek一个字符，如果遇到的是'<'或'#'则说明此时遇到的是空值。否则将‘<’作为一个单独的终结符返回。
 ```C++
-Token* Lexer::LexEndTagOrNullVal(LexSegment seg) {
+std::unique_ptr<Token> Lexer::LexEndTagOrNullVal(LexSegment seg) {
   if (!IsEndTag(is.peek(), seg)) { //当前字符是非终结符，返回空
     return nullptr;
   }
@@ -115,7 +116,8 @@ Token* Lexer::LexEndTagOrNullVal(LexSegment seg) {
   token_end += GetChar();
   if ((token_end[0] == '<' && (is.peek() != '<' && is.peek() != '#')) ||
       token_end[0] != '<') {//如果所遇字符是终结符但是不是"<"则可以直接返回，如果是"<"但是下一个字符不是"<"或"#"说明我们只是单纯遇到了终结符"<"也可以直接返回
-    return new Token{token_end, ENDTAG};
+    std::unique_ptr<Token> token(new Token{token_end, ENDTAG});
+    return token;
   }
   if (is.peek() == '<') { //此时匹配<<NULL TYPE>>
     ...
@@ -128,7 +130,7 @@ Token* Lexer::LexEndTagOrNullVal(LexSegment seg) {
 #### 2.3.4 LexValueId函数的实现
 该函数主要解析ValueId，模式为%number。
 ``` C++
-Token* Lexer::LexValueId() {
+std::unique_ptr<Token> Lexer::LexValueId() {
   if (is.peek() != '%') { //当前字符不是'%'返回空值
     return nullptr;
   }
@@ -160,21 +162,21 @@ char Lexer::GetChar() {
 ```
 
 #### 2.3.8 IsEndTag和IsSpace函数的实现
-该函数主要用于判断是否是终结符，IsEndTag接受`LexSegment`作为参数。LexSegment是标识Lexer目前处于哪个工作阶段的标识信息，主要分为如下阶段：
+在IsEndTag中定义终结符，目前共支持如下终结符：
 
-* parseOpResult：解析OpResult段
-* parseOpInfo：解析OpInfo段
-* parseOpRand：解析OpRand段
-* parserAttribute：解析Attribute段
-* parseFunctionType：解析FunctionType段
+> { } ( ) : < > , [ ] + = 
 
-可以在每个段中定义不同的界符。`该部分会重新优化，放弃使用分段信息。`
+在IsSpace函数中定义空白字符，目前支持四种：
 
-#### 2.3.9 GetToken函数的实现
+> ' ' , '\n' , '\t' , '\f'
+
+#### 2.3.9 ConsumeToken函数的实现
 该函数依次调用上述以Lex开头命名的函数，如果返回值为空，则说明当前Token不是该函数所描述的，有且仅有一个函数可以成功解析该Token并且返回。
 
+
+
 ```C++
-Token Lexer::GetToken(LexSegment seg) {
+Token Lexer::ConsumeToken(LexSegment seg) {
   SkipWhitespace();  //首先跳过空白字符
   if (auto token = LexIdentifer(seg)) { //尝试解析Idetifer
     return *token;
@@ -193,6 +195,16 @@ Token Lexer::GetToken(LexSegment seg) {
   }
 }
 ```
+#### 2.3.10 Unget的实现
+```C++
+void Lexer::Unget(const int len){
+  if(is.eof()){//如果此时已经读到流的结束位置，则重置is
+    is.clear();
+  }
+  column -= len;
+  is.seekg(-len,std::ios::cur);//调用seekg函数，修改is的位置
+}
+```
 ### 2.4 Parser模块
 Parser模块实现将序列化文件反序列化为计算图的功能。
 
@@ -201,10 +213,7 @@ Parser模块实现将序列化文件反序列化为计算图的功能。
 * Builder : 构造器对象，主要功能是完成基础Attribute或Type的构建
 * OpResultMap : 该Map类型为`Map<string,OpResult>`，当Create一个Op之后，将该Op的OpResult对应的ValueId作为Key，OpResult本身作为Value放入该Map中。如果该Op的OpResult作为后续Op的OpRand，那么，直接从该Map中获取即可。
 * IrContext : 该对象管理所有注册的方言，Parser在工作过程中会通过此对象得到OpInfo以及通过DialectName得到对应的Dialect对象。
-* Last_Token : 保存一个Token和Cur_Token一起实现PeekToken的功能
-* Cur_Token : 保存一个Token和Cur_Token一起实现PeekToken的功能
-* LexSegment : 段信息，主要保存当前Parser正处于哪一个工作段中。`该部分会重新优化，放弃使用分段信息。`[分段信息](#238-isendtag和isspace函数的实现)
-
+* 
 #### 2.4.2 Parser递归下降程序框图
 
 主要思路是分析程序程序由一组递归过程组成，递归下降分析程序的主要设计思路是：对每一语法变量(非终结符)构造一个相应的子程序，识别对应的语法单位，通过子程序间的相互调用实现对输入串的分析。
@@ -224,9 +233,9 @@ Parser模块实现将序列化文件反序列化为计算图的功能。
 根据`OpResultList`的文法定义，代码实现逻辑如下：
 ```C++
 // TODO 函数名改为ParseOpResultList
-vector<string> IrParser::ParseOpResultIndex() {
+vector<string> IrParser::ParseOpResultList() {
   获取左括号；
-  Token index_token = GetToken();
+  Token index_token = ConsumeToken();
   while (index_token.val_ != ")") { //如果当前的Token是右括号说明ParseOpResultList结束
     if (index_token.token_type_ == NULL_) {//检查是否为空值
       opresultindex.push_back("null");
@@ -234,8 +243,8 @@ vector<string> IrParser::ParseOpResultIndex() {
       string str = index_token.val_;
       opresultindex.push_back(str);
     }
-    if (GetToken().val_ == ")") break;//eat 逗号，如果发现是右括号说明ParseOpResultList结束
-    index_token = GetToken();
+    if (ConsumeToken().val_ == ")") break;//eat 逗号，如果发现是右括号说明ParseOpResultList结束
+    index_token = ConsumeToken();
   }
   return opresultindex;
 }
@@ -250,7 +259,7 @@ vector<string> IrParser::ParseOpResultIndex() {
 ```C++
 
 OpInfo IrParser::ParseOpInfo() {
-  Token opname_token = GetToken();
+  Token opname_token = ConsumeToken();
   string opname = opname_token.val_;//得到OpName
   return ctx->GetRegisteredOpInfo(opname);//返回opinfo
 }
@@ -303,14 +312,14 @@ AttributeMap的文法定义如下：
 
 * 修改前
 
-> {data_format:NCHW,dilations:array[1,1],groups:1,padding_algorithm:EXPLICIT,paddings:array[0,0],stop_gradient:array[0],strides(Array):array[1,1]} 
+> {data_format:NCHW,dilations:array[1,1],padding_algorithm:EXPLICIT,paddings:array[0,0],stop_gradient:array[0],strides(Array):array[1,1]} 
 * 修改后
 
-> 待补充
+> {data_format:(pd.DataLayout)NCHW,dilations:(Array)[1,1],padding_algorithm:(String)EXPLICIT,paddings:(Array)[0,0],stop_gradient:(Array)[0],strides(Array):(Array)[1,1]} 
 
 根据修改后的`Attribute`打印特点可以在构建一个`Attribute`之前就预先知道其为何种类型。这样可以准确构造出每一个`Attribute`.
 
-2. builtin方言中定义的`Attribute`直接在Parser中进行Parse,其他方言自定义的`Attribute`怎么进行Parser?
+1. builtin方言中定义的`Attribute`直接在Parser中进行Parse,其他方言自定义的`Attribute`怎么进行Parser?
    
    该问题的解决方案是在`Dialect`接口中增加一个虚函数`ParseAttribute`该函数负责本方言自定义的`Attribute`的Parse。修改之后的接口如下：
 
@@ -342,8 +351,8 @@ Attribute IrParser::ParseAttribute() {
   }
 }
 ```
-#### 2.4.7 ParseFunctionTypeList的实现
-//TODO 函数名称改为ParseFunctionType
+#### 2.4.7 ParseTypeList的实现
+
 FunctionTypeList的文法定义为:
 
 > FunctionTypeList ::= TypeList "->" TypeList
@@ -434,7 +443,15 @@ ir::Type PaddleDialect::ParseType(ir::IrParser &parser) {  // NOLINT
   std::vector<int> dim{};
   Token dim_token = parser.PeekToken();
   while (dim_token.token_type_ == DIGIT) {
-    parse dim;
+    if(peek_token_val[0] != 'x'){
+      break;
+    }
+    parser.ConsumeToken();
+    parser.lexer->Unget(peek_token_val.size()-1);
+    //以parse  tenser<256xf32>为例
+    //lexer会认为xf32是一个token,不过没关系,我们只取'x'
+    //剩余的字符放回字符流中,这样得到的下一个token就是f32
+    //这样就解决了字符'x'二义性的问题。
   }
   phi::DDim ddim = phi::make_ddim(dim);
   ir::Type dtype = parser.ParseType();//parse datatype
@@ -460,7 +477,6 @@ pd方言中共定义了一下`Attribute`；
 其中`ScalarAttribute`是`BoolAttribute`,`Int32Attribute`,`Int64Attribute`,`DoubleAttribute`,`FloatAttribute`的抽象，它可以为这五个类型之一。所以这里直接将`ScalarAttribute`Parse成这5个`Attribute`之一。
 
 根据之前对于`Attribute`的Printer的约定，pd中的`ParseAttribute`实现如下：
-TODO:使用unorder_map优化if-else
 
 ```C++
 ir::Attribute PaddleDialect::ParseAttribute(ir::IrParser &parser) {  // NOLINT
@@ -519,5 +535,47 @@ ir::Attribute TestParserDialect::ParseAttribute(
 
 这里的`test:(tp.char)a`是`TestParserDialect`自定义`Attribute`的Printer输出。
 当`IrParser`中的`ctx`注册了`TestParserDialect`之后，当`IrParser`处理到`(tp.char)`时,`IrParser`程序就可以根据`DialectName`找到`Dialect`对象，执行里面预置的`ParserAttribute`方法。
-### 3.2给Parser增加测试
+
+### 3.2 对外提供的接口Parser
+#### 3.2.1 如何反序列化Program
+参考代码如下：
+```cpp
+ir::IrContext *ctx = ir::IrContext::Instance();
+ctx->GetOrRegisterDialect<PaddleDialect>();
+
+std::ifstream program_text(file_path);
+std::unique_ptr<ir::Program> program = ir::Program::Parse(program_text,ctx);
+std::cout << *program << std::endl;
+```
+
+可以参考`test/cpp/ir/core/program_translator_test.cc`的`IrParserTest`，提供了例子。
+
+#### 3.2.2 如何反序列化Type/Attribute
+
+`Type`和`Attribute`的Parse方式和Program类似，如下：
+```cpp
+std::stringstream attr_text("(Array)[(pd.DataType)bool,(pd.DataType)float32,(pd.DataType)float64]");
+auto attribute = ir::Program::Parse(ctx, attr_text);
+std::cout << attribute << std::endl;
+```
+可以参考`test/cpp/ir/core/ir_parser_test.cc`和`test/cpp/ir/core/TestParserText.txt`。
+## 四、ir_parser_test
+`ir_parser_test`支持以txt文件的形式提供测试数据。它的功能类似于一个简单的`filecheck`。目前支持对`Attribute`,`type`,`program`三种结构的测试，txt测试数据文件的格式举例如下：
+> //CHECK attribute
+> 
+> (String) sdfgs.sdsd
+> 
+> //CHECK type
+> 
+>pd_op.tensor<256xf32>
+>
+>//CHECK program
+>
+>{ }
+
+首先,第一行需要给出`//CHECK`标志,然后给出是`type`,`attribute`,`program`中的哪一种类型的测试,之后在第二行开始给出对于的序列化字符串.
+
+`ir_parser_test`会解析上述内容拿到对应的字符串,利用字符串parse出`type`,`attribute`或`program`,再调用相应的print方法对比进行反序化之前的内容.
+这里并没有直接对比两个字符串的内容,而是比较两个字符串解析得到的`Token`,这是为了给写txt文本时留一些格式上变通的空间。
+
 
