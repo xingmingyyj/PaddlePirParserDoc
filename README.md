@@ -1,2 +1,2 @@
-# parser_doc
-存放Paddle PIR parser文档
+# PaddlePirParserDoc
+用于存放Paddle新IR的Parser模块的实现文档
