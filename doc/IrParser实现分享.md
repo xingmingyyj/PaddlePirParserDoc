@@ -175,7 +175,7 @@ class IrParser {
 其次是`Parser`自己定义的一些成员函数,这里同样的,并不把每一个成员函数拆看来看(关键的除外),因为这些函数大部分实在处理一些边界问题,或者是大量的类型判断(if-else).这里更关心的是实现`Parser`的思路还有遇到了哪些问题,这些问题是采用什么方案解决的.
 
 `Parser`的工作由计算图的组成来看可以分为两个部分,首先是恢复计算图的每个节点,即恢复出每个`Operation`.其次是确定节点之间的连接关系.这样`Parser`就算完成了计算图的点和边的恢复.下图给出了`ParseOperation`的流程.
-![ParseOperation流程](../imag/ParseOperation流程.JPG)
+![ParseOperation流程](ParseOperation流程.JPG)
 在实现`ParserOperation`之前,需要确定如何构造出一个`Operation`,我们需要什么信息?
 
 ```c++
@@ -241,17 +241,131 @@ Operation* IrParser::ParseOperation() {
 `Parser`模块应该能够支持其他`Dialect`中提供的`Type`和`Attribute`的接入,只有满足这个条件所设计的`Parser`才有很强的通用性.因为随着不断引入新的`Dialect`,`Parser`无法提前预判它要完成什么样的`Type`和`Attribute`的`parse`.`Printer`和`Parser`是两个对偶的过程,这里先看一下`Printer`是怎么支持不同方言接入的.
 ```C++
 void BasicIrPrinter::PrintType(Type type) {
-  if(type.IsBuiltInType()){
-     Print(type);
-  }else {
+  if (!type) {
+    os << "<<NULL TYPE>>";
+    return;
+  }
+
+  if (type.isa<BFloat16Type>()) {
+    os << "bf16";
+  } 
+  ........
+  else if (type.isa<VectorType>()) {
+    os << "vec[";
+    auto inner_types = type.dyn_cast<VectorType>().data();
+    PrintInterleave(
+        inner_types.begin(),
+        inner_types.end(),
+        [this](Type v) { this->PrintType(v); },
+        [this]() { this->os << ","; });
+    os << "]";
+  } else {
     auto& dialect = type.dialect();
     dialect.PrintType(type, os);
   }
 }
 ```
+这里`Printer`的实现思路是首先对传入的`type`进行判断是不是定义在`BuiltinDialect`中的`type`.如果是的话就直接将`type`print.否则这个`type`必然就是定义在其他方言中的,那么就要由对应的方言去提供这个`type`的`print`函数.这里可以看一下`Dialect`接口的设计.
+```C++
+  virtual void PrintType(Type type, std::ostream &os) const {
+    IR_THROW("dialect has no registered type printing hook");
+  }
+```
+在`Dialect`中定义了虚函数`PrintType`,如果某个`Dialect`自己定义了某些`Type`,那么这个`Dialect`就要重写`PrintType`方法去完成该`type`的print.
 
+以`OpDialect`为例里面注册了`DenseTensorType`,下面是它实现的`PrintType`方法用来完成对该`type`的print
+```C++
+void OperatorDialect::PrintType(pir::Type type, std::ostream &os) const {
+  os << type.dialect().name();
+  os << '.';
+  if (auto tensor_type = type.dyn_cast<DenseTensorType>()) {
+    os << "tensor<";
+    for (auto d : phi::vectorize(tensor_type.dims())) {
+      pir::ShapedTypeInterface::IsDynamic(d) ? os << "?" : os << d;
+      os << "x";
+    }
+    tensor_type.dtype().Print(os);
+    os << ">";
+  } else if (auto selected_rows_type = type.dyn_cast<SelectedRowsType>()) {
+    os << "selectedrows<";
+    for (auto d : phi::vectorize(selected_rows_type.dims())) {
+      os << d;
+      os << "x";
+    }
+    selected_rows_type.dtype().Print(os);
+    os << ">";
+  }
+}
+```
+`Parser`参考了这种设计,同样的在`Dialect`中增加了一个虚函数,
+```C++
+  virtual Type ParseType(IrParser &parser) {  // NOLINT
+    IR_THROW("dialect has no registered type parsing hook");
+  }
+```
+但是这里还是和`Printer`有很大的不同,这里将`Parser`直接传入,是因为`ParseType`在工作时可能使用到`Parser`中的`Lexer`或者是`Parser`自身实现的`ParseType`.最大的不同是,`Printer`可以直接使用`type.`
+但是这里还是和`Printer`有很大的不同,这里将`Parser`直接传入,是因为`ParseType`在工作时可能使用到`Parser`中的`Lexer`或者是`Parser`自身实现的`ParseType`.最大的不同是,`Printer`可以直接使用`type.dialect()`拿到`Dialect`对象使用里面的`PrintType`函数,但是`Parser`在面对`Token("tensor")`时,如何判断它马上要处理的`tensor`定义在哪个`Dialect`?这里对计算图的文法进行了修改,强行规定在`type`的print必须按照`dialect_name.type_name`的形式进行print这样`Dialect`自定义的`type`才能适配`Parser`.
+针对修改后的计算图`Parser`的`ParseType`实现如下
+```C++
+// Type := BuiltinType | OtherDialectsDefineType
+// BuiltinType := <<NULL TYPE>> | bf16 | f16 | f32 | f64
+//             := | b | i8 | u8 | i16 | i32 | i64 | index | c64
+//             := | c128 | VectorType
+// VectorType := '[' Type(,Type)* ']'
+Type IrParser::ParseType() {
+  Token type_token = PeekToken();
+  if(){
+      ......
+  }
+  else {
+    IR_ENFORCE(type_val.find('.') != std::string::npos,
+               "No function parsing " + type_val + " exists!" +
+                   GetErrorLocationInfo());
+    auto dialect_name = type_val.substr(0, type_val.find('.'));
+    auto dialect = ctx->GetRegisteredDialect(dialect_name);
+    return dialect->ParseType(*this);
+  }
+}
+```
+`Attribute`的接入实现与`Type`相同.<br>
+2.如何确定`Attribute`的具体类型?<br>
+举个例子,`{a:0}`是一个`AttributeMap`,这里的`a`是Key,但是`0`有好多种解释,它可以被解释成`BoolAttribute`,`IntAttribute`,`FloatAttribute`.翻译是如何确定.<br>
+之前尝试过的一种方法是,得到`op_info`之后,利用我们可以得到`attr_infos`信息.
+```C++
+      auto* op_info_concept =
+        op_info.GetInterfaceImpl<paddle::dialect::OpYamlInfoInterface>();
+       OpInputInfoList input_infos;
+       OpAttributeInfoList attr_infos;
+       OpOutputInfoList output_infos;
+       std::tie(input_infos, attr_infos, output_infos, std::ignore) =
+       op_info_concept->get_op_info_();//
+```
+可以通过`AttributeMap`中的Key去`attr_infos`中查找对应的`Attribute`类型.这样`ParseAttribute(std::string attr_type)`.这样调用`ParseAttribute`时总要提供对应的`Attribute`的类型,这样过于繁琐.最终决定还是修改文法在`PrintAttribute`按照`(AttributeType)AttributeValue`的形式打印,这样前面的类型信息就可以引导`Parser`找到对应的`ParserAttribute`方法完成一个`Attribute`的`parse`.
+```C++
+// Attribute := BuiltinAttribute | OtherDialectsDefineAttribute
+// BuiltinAttribute := Bool | String | Float | Double | Int32 |
+//                  := | Int64 | Pointer | ArrayAttribute
+// ArrayAttribute   := '[' Atribute(,Attribute)* ']'
+Attribute IrParser::ParseAttribute() {
+  auto parenthesis_token = ConsumeToken();
+  std::string attribute_type = PeekToken().val_;
+  if (attribute_type == "Float") {
+    ConsumeAToken("Float");
+    ConsumeAToken(")");
 
-
-
-
-
+    return builder->float_attr(static_cast<float>(atof(val.c_str())));
+  } 
+  ....
+  else {
+    IR_ENFORCE(attribute_type.find('.') != std::string::npos,
+               "No function parsing " + attribute_type + " exists!" +
+                   GetErrorLocationInfo());
+    auto dialect_name = attribute_type.substr(0, attribute_type.find('.'));
+    auto dialect = ctx->GetRegisteredDialect(dialect_name);
+    return dialect->ParseAttribute(*this);
+  }
+}
+```
+到此为止,`Parser`可以完成一个`Operation`的`parse`并且还支持其他`Dialect`接入`Parser`.
+对于`ParseProgram`,目前只考虑单一`block`的情况,所以反复调用`ParseOperation`即可.
+## 三、Q&A
