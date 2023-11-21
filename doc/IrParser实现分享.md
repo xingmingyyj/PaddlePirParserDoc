@@ -1,36 +1,36 @@
 # Pir Parser实现分享
-本文档对Pir的Parser的实现思路进行介绍，Parser主要完成读取一个描述计算图的文本串在构建出对应计算图对象的工作。阅读本文档的收获：
+本文档对Pir的Parser的实现思路进行介绍，Parser主要完成读取一个描述计算图的文本串在构建出对应计算图对象的工作.阅读本文档的收获：
 - 加深了解PIR体系设计
 - 熟悉PIR下各个组件中API的使用
 - 了解Dialect机制
 ## 一、背景
-### 1.Pir体系下的Program
-Pir体系下的`Program`主要由计算图`graphs`和权重参数`weights`组成。其中计算图`graphs`描述了该`Program`的计算行为。新IR描述下的`Program`主要包括`Region`,`Block`,`Operation`,`Value`等组件。关于这些组件的设计思路和实现推荐一下两个文档`Docs/19_PIR_Adapt_CINN/CodeReading/PIR_source_code_reading_guide.md`和`pfcc/paddle-code-reading/IR_Dialect/ir_program.md`，里面对Pir的提出背景，组件设计与实现做了详细的介绍。
-### 2.Pir计算图文法介绍
-实现`Parser`可能更关心的是组成`graphs`的文法。因为文法描述了语言中的基本元素以及它们之间的组合关系。通过文法可以确定`Parser`要处理的基本元素，以及`Parser`必须有哪些模块，它们直接如如何相互调用完成工作的。
+### 1.1 Pir体系下的Program
+Pir体系下的`Program`主要由计算图`graphs`和权重参数`weights`组成.其中计算图`graphs`描述了该`Program`的计算行为.新IR描述下的`Program`主要包括`Region`,`Block`,`Operation`,`Value`等组件.关于这些组件的设计思路和实现推荐一下两个文档`Docs/19_PIR_Adapt_CINN/CodeReading/PIR_source_code_reading_guide.md`和`pfcc/paddle-code-reading/IR_Dialect/ir_program.md`，里面对Pir的提出背景，组件设计与实现做了详细的介绍.
+### 1.2 Pir计算图文法介绍
+实现`Parser`可能更关心的是组成`graphs`的文法.因为文法描述了语言中的基本元素以及它们之间的组合关系.通过文法可以确定`Parser`要处理的基本元素，以及`Parser`必须有哪些模块，它们直接如如何相互调用完成工作的.
 
 >**ModuleOp/Program**<br>
-> Program  ::= [ ParameterList ] ModuleOp; <br>
-> ModuleOp ::= { Region };<br>
-> <br>
-> ParameterList ::= { Parameter };<br>
-> Parameter ::= Stringidentifier ":" Type "\n";<br><br>
-> **Region/Block** <br>
-? Region ::= { Block }; <br>
-> Block ::= "{" { Operation } "}" ;<br><br>
-> **Operation**<br>
-> Operation ::= OpResultList? "=" (GenericOperation | CustomOperation)<br>
-> GenericOperation ::= OpName "("OperandList? ")" AttributeMap ":" FunctionType<br>
-> OpName::= "\"" StringIdentifier "." StringIdentifier "\""<br>
-> CustomOperation::= CustomOperationFormat<br>
-> OpResultList  ::= ValueList<br>
-> OperandList::= ValueList<br>
-> ValueList ::= ValueId ("," ValueId)*<br>
-> ValueId::= "%" Digits<br>
-> AttributeMap::= "[" (AttributeEntry ("," AttributeEntry)* ) ")"<br>
-> AttributeEntry::= StringIdentifier ":" Attribute<br>
-> FunctionType::= TypeList  '->'  TypeList<br>
-> TypeList ::= Type (",", Type)*
+Program  ::= [ ParameterList ] ModuleOp; <br>
+ModuleOp ::= { Region };<br>
+<br>
+ParameterList ::= { Parameter };<br>
+Parameter ::= Stringidentifier ":" Type "\n";<br><br>
+**Region/Block** <br>
+Region ::= { Block }; <br>
+Block ::= "{" { Operation } "}" ;<br><br>
+**Operation**<br>
+Operation ::= OpResultList? "=" (GenericOperation | CustomOperation)<br>
+GenericOperation ::= OpName "("OperandList? ")" AttributeMap ":" FunctionType<br>
+OpName::= "\"" StringIdentifier "." StringIdentifier "\""<br>
+CustomOperation::= CustomOperationFormat<br>
+OpResultList  ::= ValueList<br>
+OperandList::= ValueList<br>
+ValueList ::= ValueId ("," ValueId)*<br>
+ValueId::= "%" Digits<br>
+AttributeMap::= "[" (AttributeEntry ("," AttributeEntry)* ) ")"<br>
+AttributeEntry::= StringIdentifier ":" Attribute<br>
+FunctionType::= TypeList  '->'  TypeList<br>
+TypeList ::= Type (",", Type)*
 
 文法为了配合后面的`Parser`设计有一些改动.
 
@@ -42,8 +42,27 @@ Pir体系下的`Program`主要由计算图`graphs`和权重参数`weights`组成
 
 ## 二、Parser的设计与实现
 在确定描述PIR计算图的文法之后,`Parser`的实现思路是采用经典的`自顶向下分析方法`,为每一个基本的组成元素比如`Attribute`,`Type`,`Value`等,构造相应的`Parser`子程序,通过不断调用相应的`Parser`子程序完成对整个计算图的构造.
-以上是构造`Parser`的基本思路,其实`Parser`程序可以参考的程序有很多,实现相对固定.下面分模块展开介绍,重点想介绍的是在`Parse`PIR计算图的背景下,实现`Parser`时遇到了哪些问题,是怎么解决的,这些解决方法并不是最优的,有一些妥协.欢迎大家提出更好的想法.
-### 1. Lexer的设计与实现
+以上是构造`Parser`的基本思路,其实`Parser`程序可以参考的程序有很多,实现相对固定.下面分模块展开介绍,重点想介绍的是在`Parse`PIR计算图的背景下,实现`Parser`时遇到了哪些问题,是怎么解决的,这些解决方法并不是最优的,有一些妥协.欢迎大家提出更好的想法.<br>
+为了方便后面的介绍这里首先给出`Parser`工作的例子：
+>{<br>
+(%0) = "pd_op.feed" () {col:2,name:LearningRate} : () -> tensor<1xf32><br>
+(%1) = "pd_op.feed" () {col:1,name:Grad} : () -> tensor<102x105xf32><br>
+(%2) = "pd_op.feed" () {col:0,name:Param} : () -> tensor<102x105xf32><br>
+(%3) = "pd_op.dpsgd" (%2, %1, %0) {batch_size:16,clip:10000,seed:0,sigma:0} : (tensor<102x105xf32>, ensor<102x105xf32>, tensor<1xf32>) ->tensor<102x105xf32><br>
+(%4) = "pd_op.fetch" (%3) {col:0,name:ParamOut} : (tensor<102x105xf32>) -> tensor<102x105xf32><br>
+}
+
+上面是一个完整的计算图，但是已经和现在的很不相同了.可以看出它由5个Op构成，我们大体看一下`Parser`是如何构造出第一个Op的.
+> (%0) = "pd_op.feed" () {col:2,name:LearningRate} : () -> tensor<1xf32>
+
+第一个Op的信息全部包含着上面的字符串中，上述字符串首先会被`Lexer`处理成
+> "(", "%0", ")", "=", "pd_op.feed", "(", ")", "{", "col", ":",  "2",
+> ",", "name", ":", "LearningRate", "}", ":", "(", ")", "->", "tensor","<", "1",
+> "1", "xf32", ">"
+
+但是`Lexer`并不是一口气把上面的字符串全变成`Token`的，只有`Parser`请求`Token`时，`Lexer`才会返回一个.另外，`xf32`这个`Token`有一些奇怪，后面会介绍这个问题.
+现在`Parser`能够看到的就是上面的这些`Token`，然后它利用这些`Token`来构造Op.简单描述一下这个过程，当`Parser`看到第一个`Token`"("时，他清楚这时应该处理`OpResultList`，当`Parser`遇到")"这时就说明`OpResultList`,然后期待"="，之后遇到的`Token`就携带了`OpName`.然后`Parser`处理`OpResultList`.当遇到"{"时表示要处理`AttributeMap`了，这里可以看出在处理不同的`Attribute`上会有一些问题，后面会讨论这里的设计.之后`Parser`会去处理`FunctionTypeList`.它会遇到"tensor"这个`Token`这个`Token`的具体含义`Parser`本身也不清楚.因为我们不能假设`Parser`可以预判所有的`FunctionType`，这个问题的处理方式后面会详细讨论.
+### 2.1 Lexer的设计与实现
 `Lexer`是`Parser`的一个子模块,主要功能是将输入的文本序列拆分成一个个的`Token`,`Parser`在执行`parse`的过程中会不断地向`Lexer`请求一个个`Token`,然后,`Parser`会根据这些`Token`决定下一步的动作,或者利用`Token`的信息构建计算图.
 `Lexer`的声明如下:
 ```C++
@@ -83,8 +102,8 @@ class Lexer {
 
 <br>
 
-**遇到的问题:** <br>
-1.字符`x`的二义性问题如何解决?<br>
+#### 遇到的问题:<br>
+#### 2.1.1字符`x`的二义性问题如何解决?<br>
 字符`x`的二义性指的是字符`x`本身具有英文字母`x`的含义.但是在`OperatorDialect::PrintType`中在print`DenseTensorType`时使用`x`表示乘法的含义.例如,`pd_op.tensor<1xi64>`里面的字符`x`就是表示乘法的含义,我们在分析这个字符串时词法分析器就应该返回下面的`Token`:
 > pd_op.tensor, <,  1, x,  i64, >
 
@@ -137,8 +156,8 @@ pir::Type OperatorDialect::ParseType(pir::IrParser &parser) {  // NOLINT
 ```
 从`OperatorDialect::ParseType`的实现来看,虽然`Lexer`返回的`Token`是`xi64`,但是`Parser`只关心第一个字符是不是它正在期待的`x`,如果是就利用`Unget`函数将剩下的字符还给`Lexer`,下次再次向`Lexer`请求`Token`就得到了`i64`.
 
-### 2.Parser的设计与实现
-`Parser`主要功能就是调用`Lexer`,通过分析`Lexer`返回的`Token`构建出计算图.这里`Parser`的主要设计思路是分析程序程序由一组递归过程组成，递归下降分析程序的主要设计思路是：对每一语法变量(非终结符)构造一个相应的子程序，识别对应的语法单位，通过子程序间的相互调用实现对输入串的分析。`Parser`设计的核心其实是对单个`Operation`的`parse`.因为由之前的文法可以看出,针对目前的PIR描述的计算图单一`block`只有`Operation`组成.
+### 2.2 Parser的设计与实现
+`Parser`主要功能就是调用`Lexer`,通过分析`Lexer`返回的`Token`构建出计算图.这里`Parser`的主要设计思路是分析程序程序由一组递归过程组成，递归下降分析程序的主要设计思路是：对每一语法变量(非终结符)构造一个相应的子程序，识别对应的语法单位，通过子程序间的相互调用实现对输入串的分析.`Parser`设计的核心其实是对单个`Operation`的`parse`.因为由之前的文法可以看出,针对目前的PIR描述的计算图单一`block`只有`Operation`组成.
 
 `parser`的定义如下:
 ```C++
@@ -236,8 +255,8 @@ Operation* IrParser::ParseOperation() {
   return op;
 }
 ```
-**遇到的问题**<br>
-1.`Parser`如何应对`Dialect`中自定义的`Type`或者`Attribute`?
+#### 遇到的问题<br>
+#### 2.2.1 `Parser`如何应对`Dialect`中自定义的`Type`或者`Attribute`?
 `Parser`模块应该能够支持其他`Dialect`中提供的`Type`和`Attribute`的接入,只有满足这个条件所设计的`Parser`才有很强的通用性.因为随着不断引入新的`Dialect`,`Parser`无法提前预判它要完成什么样的`Type`和`Attribute`的`parse`.`Printer`和`Parser`是两个对偶的过程,这里先看一下`Printer`是怎么支持不同方言接入的.
 ```C++
 void BasicIrPrinter::PrintType(Type type) {
@@ -328,7 +347,7 @@ Type IrParser::ParseType() {
 }
 ```
 `Attribute`的接入实现与`Type`相同.<br>
-2.如何确定`Attribute`的具体类型?<br>
+#### 2.2.2 如何确定`Attribute`的具体类型?<br>
 举个例子,`{a:0}`是一个`AttributeMap`,这里的`a`是Key,但是`0`有好多种解释,它可以被解释成`BoolAttribute`,`IntAttribute`,`FloatAttribute`.翻译是如何确定.<br>
 之前尝试过的一种方法是,得到`op_info`之后,利用我们可以得到`attr_infos`信息.
 ```C++
@@ -368,4 +387,84 @@ Attribute IrParser::ParseAttribute() {
 ```
 到此为止,`Parser`可以完成一个`Operation`的`parse`并且还支持其他`Dialect`接入`Parser`.
 对于`ParseProgram`,目前只考虑单一`block`的情况,所以反复调用`ParseOperation`即可.
+### 2.3 Parser另外的一个实现思路
+#### 2.3.1 基本思路
+再回顾一下`PrintType`的实现:
+```C++
+void BasicIrPrinter::PrintType(Type type) {
+  if (!type) {
+    os << "<<NULL TYPE>>";
+    return;
+  }
+
+  if (type.isa<BFloat16Type>()) {
+    os << "bf16";
+  } 
+  ........
+  else if (type.isa<VectorType>()) {
+    os << "vec[";
+    auto inner_types = type.dyn_cast<VectorType>().data();
+    PrintInterleave(
+        inner_types.begin(),
+        inner_types.end(),
+        [this](Type v) { this->PrintType(v); },
+        [this]() { this->os << ","; });
+    os << "]";
+  } else {
+    auto& dialect = type.dialect();
+    dialect.PrintType(type, os);
+  }
+}
+
+```
+现在希望能不能也为`Parser`设计一个这样的接口
+```C++
+IrParser::parseType(Tpye &type);
+```
+比如我们想让`parseType`去根据字符流中的信息构造出一个`DenseTensorType`,我们可以初始化一个空的`DenseTensorType`传递给`parseType`,`ParseType`会判断当前`type`属于哪个`Dialect`然后去执行对应的`Parser`.
+这样的实现有如下好处：
+1. 简化文法设计，现在我们必须在`type`前面打印出`type_name`,必须在`Attribute`之前打印出它的类型和定义它的`Dialect`
+2. 接口更加自然、规范,上一个方案我们需要把当前`parser`对象传递给`Dialect`里的`Parse`显得突兀.
+
+#### 2.3.2 已有的技术支撑
+`Parser`在得到`op_info`时基于可以得到后面`Attribute`和`FunctionType`的所有信息.
+比如，以`dpsgd`为例，它的签名如下：
+```yaml
+- op: dpsgd
+  args: (Tensor param, Tensor grad, Tensor learning_rate, float clip = 10.0f, float batch_size = 16.0f, float sigma = 1.0f, int seed = 0)
+  output: Tensor(param_out)
+  infer_meta:
+     func: DpsgdInferMeta
+  kernel:
+     func: dpsgd
+     data_type: param
+```
+我们同样可以使用
+```C++
+      auto* op_info_concept =
+        op_info.GetInterfaceImpl<paddle::dialect::OpYamlInfoInterface>();
+       OpInputInfoList input_infos;
+       OpAttributeInfoList attr_infos;
+       OpOutputInfoList output_infos;
+       std::tie(input_infos, attr_infos, output_infos, std::ignore) =
+       op_info_concept->get_op_info_();//
+```
+得到`input_info`,`attr_info`,`output_info`等信息.
+```C++
+//input_info
+param : paddle::dialect::DenseTensorType
+grad : paddle::dialect::DenseTensorType
+learning_rate : paddle::dialect::DenseTensorType
+//attr_info
+clip : pir::FloatAttribute
+batch_size : pir::FloatAttribute
+sigma : pir::FloatAttribute
+seed : pir::Int32Attribute
+//output_info
+param_out : paddle::dialect::DenseTensorType
+```
+
+#### 2.3.3 面临的困难
+如何给接口`IrParser::parseType(Tpye &type);`提供一个初始的`type`是该方案存在的最大的问题.因为`Parser`要应对`Dialect`的接入不可能枚举所有的`type`和`attribute`.目前的一个想法是将初始的`type`放入`op_info`中.
+
 ## 三、Q&A
