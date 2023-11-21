@@ -194,7 +194,7 @@ class IrParser {
 其次是`Parser`自己定义的一些成员函数,这里同样的,并不把每一个成员函数拆看来看(关键的除外),因为这些函数大部分实在处理一些边界问题,或者是大量的类型判断(if-else).这里更关心的是实现`Parser`的思路还有遇到了哪些问题,这些问题是采用什么方案解决的.
 
 `Parser`的工作由计算图的组成来看可以分为两个部分,首先是恢复计算图的每个节点,即恢复出每个`Operation`.其次是确定节点之间的连接关系.这样`Parser`就算完成了计算图的点和边的恢复.下图给出了`ParseOperation`的流程.
-![ParseOperation流程](ParseOperation流程.JPG)
+![ParseOperation流程](../imag/ParseOperation流程.JPG)
 在实现`ParserOperation`之前,需要确定如何构造出一个`Operation`,我们需要什么信息?
 
 ```c++
